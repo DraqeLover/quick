@@ -16,8 +16,6 @@ import subprocess
 from mutagen.wave import WAVE
 import wave
 import pyaudio  
-import numpy as np  # Added for audio processing
-import librosa  # Added for resampling
 
 # Load environment variables
 load_dotenv("Key.env")
@@ -119,24 +117,24 @@ async def process_transcript(full_sentence, dg_connection):
             dp_voice = "aura-asteria-en"
             sleep = False
             transcript_collector.reset()
-            return
+            return  # Stop processing
         elif "hey" and "crack" in full_sentence.lower():
             print("Hello Detected!")
             persona = CRACK
             dp_voice = "aura-orion-en"
             sleep = False
             transcript_collector.reset()
-            return
+            return  # Stop processing
         else:
             transcript_collector.reset()
-            return
+            return  # Ignore all other speech while sleeping
     else:
         if "bye" in full_sentence.lower():
             print("Goodbye!")
             sleep = True
             process_transcript()
 
-        asyncio.create_task(dg_connection.finish())
+        asyncio.create_task(dg_connection.finish())  # ✅ Non-blocking stop
 
         response_text = generate_message(full_sentence)
         print(f"Gemini: {response_text}")
@@ -146,26 +144,20 @@ async def process_transcript(full_sentence, dg_connection):
         delete_audio()
         transcript_collector.reset()
 
-        asyncio.create_task(get_transcript())
+        # Restart in listening mode
+        asyncio.create_task(get_transcript())  # ✅ Properly restart transcript collection
+
 
 async def get_transcript():
     try:
         deepgram = DeepgramClient(DEEPGRAM_API_KEY)
         dg_connection = deepgram.listen.asynclive.v("1")
-        
-        # Initialize PyAudio for raw capture
-        pa = pyaudio.PyAudio()
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=44100,  # Hardware rate
-            input=True,
-            frames_per_buffer=1024
-        )
+        microphone = Microphone(dg_connection.send)
 
         async def on_message(self, result, **kwargs):
             sentence = result.channel.alternatives[0].transcript
             
+            # Ignore empty or very short utterances
             if len(sentence.strip()) < 2:
                 return
                 
@@ -182,32 +174,25 @@ async def get_transcript():
         dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
         dg_connection.on(LiveTranscriptionEvents.Error, on_error)
 
-        # Modified audio capture loop
+        options = LiveOptions(
+            model="nova-2",
+            punctuate=True,
+            language="en-US",
+            encoding="linear16",
+            channels=1,
+            sample_rate=44100,
+            endpointing=True
+        )
+
+        await dg_connection.start(options)
+        microphone.start()
+
         while True:
-            # Read raw audio from microphone
-            raw_data = stream.read(1024, exception_on_overflow=False)
-            audio_np = np.frombuffer(raw_data, dtype=np.int16)
-            
-            # Convert and resample to 16kHz for Deepgram
-            audio_float = librosa.util.buf_to_float(audio_np)
-            audio_16k = librosa.resample(
-                audio_float,
-                orig_sr=44100,
-                target_sr=16000
-            )
-            
-            # Convert back to bytes and send to Deepgram
-            audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
-            await dg_connection.send(audio_bytes)
-            
-            await asyncio.sleep(0.01)  # Prevent CPU overload
+            await asyncio.sleep(1)
 
     except Exception as e:
         print(f"Could not open socket: {e}")
-        if 'stream' in locals():
-            stream.stop_stream()
-            stream.close()
-            pa.terminate()
+        # Attempt to restart after error
         await asyncio.sleep(5)
         await get_transcript()
 
