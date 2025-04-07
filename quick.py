@@ -1,180 +1,151 @@
-import asyncio 
-from dotenv import load_dotenv 
-from deepgram import (  
-    DeepgramClient,  
-    DeepgramClientOptions,  
-    LiveTranscriptionEvents,  
-    LiveOptions, 
-    Microphone, 
-    SpeakOptions,
+import asyncio
+from dotenv import load_dotenv
+from deepgram import (
+    DeepgramClient,
+    LiveTranscriptionEvents,
+    LiveOptions,
+    Microphone,
+    SpeakOptions
 )
-from google import genai  
+from google import genai
 from Characters import BDSM, WAR, CRACK, NOGO, FRIGGA
 import os
-import time
-import subprocess 
-from mutagen.wave import WAVE
+import subprocess
+import pyaudio
 import wave
-import pyaudio  
 
-# Load environment variables
+# Linux-specific audio control
+def mute_mic():
+    subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "1"])
+
+def unmute_mic():
+    subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0"])
+
 load_dotenv("Key.env")
 
-# Api key setup
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
-GEMINI_API_KEY = os.getenv("GENAI_API_KEY")
-
-# Global variables
-text = ""
-sleep = True
-persona = BDSM
-dp_voice = "aura-luna-en"
-
-class TranscriptCollector:
+class AudioManager:
     def __init__(self):
-        self.reset()
+        self.pa = pyaudio.PyAudio()
+        self.stream = None
 
-    def reset(self):
-        self.transcript_parts = []
+    def play_wav(self, filename):
+        try:
+            wf = wave.open(filename, 'rb')
+            self.stream = self.pa.open(
+                format=self.pa.get_format_from_width(wf.getsampwidth()),
+                channels=wf.getnchannels(),
+                rate=wf.getframerate(),
+                output=True
+            )
+            data = wf.readframes(1024)
+            while data:
+                self.stream.write(data)
+                data = wf.readframes(1024)
+            wf.close()
+        except Exception as e:
+            print(f"Playback error: {e}")
+        finally:
+            if self.stream:
+                self.stream.stop_stream()
+                self.stream.close()
 
-    def add_part(self, part):
-        self.transcript_parts.append(part)
+    def cleanup(self):
+        self.pa.terminate()
 
-    def get_full_transcript(self):
-        return ' '.join(self.transcript_parts).strip()
+class LinuxAssistant:
+    def __init__(self):
+        self.audio = AudioManager()
+        self.dg_client = DeepgramClient(os.getenv("DEEPGRAM_API_KEY"))
+        self.gemini = genai.Client(api_key=os.getenv("GENAI_API_KEY"))
+        self.transcript = []
+        self.sleep = True
+        self.persona = BDSM
+        self.voice = "aura-luna-en"
+        self.mic = None
+        self.connection = None
 
-transcript_collector = TranscriptCollector()
+    async def process_command(self, text):
+        if not text:
+            return
 
-# Gemini setup
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        print(f"User: {text}")
 
-def generate_message(prompt):
-    response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents= persona + prompt + NOGO
-    )
-    return response.text
+        if self.sleep:
+            if "hey frigga" in text.lower():
+                self.wake_up(FRIGGA, "aura-asteria-en")
+            elif "hey crack" in text.lower():
+                self.wake_up(CRACK, "aura-orion-en")
+            return
 
-def generate_audio(text):
-    deepgram = DeepgramClient(DEEPGRAM_API_KEY)
-    options = SpeakOptions(
-        model=dp_voice,
-        encoding="linear16",
-        sample_rate=16000
-    )
-    response = deepgram.speak.v("2").save("response.wav", {"text": text}, options)
+        if "bye" in text.lower():
+            self.sleep = True
+            return
 
-def play_audio():
-    try:
-        wf = wave.open("response.wav", "rb")
-        pa = pyaudio.PyAudio()
+        await self.respond_to_query(text)
+
+    def wake_up(self, persona, voice):
+        print("Wake word detected!")
+        self.persona = persona
+        self.voice = voice
+        self.sleep = False
+        self.transcript = []
+
+    async def respond_to_query(self, query):
+        # Mute mic before processing
+        mute_mic()
         
-        stream = pa.open(
-            format=pa.get_format_from_width(wf.getsampwidth()),
-            channels=wf.getnchannels(),
-            rate=wf.getframerate(),
-            output=True
+        # Stop current listening session
+        if self.mic:
+            self.mic.finish()
+        if self.connection:
+            await self.connection.finish()
+
+        # Generate and play response
+        response = self.generate_response(query)
+        print(f"Assistant: {response}")
+        self.generate_audio(response)
+        self.audio.play_wav("response.wav")
+        os.remove("response.wav")
+
+        # Restart listening
+        unmute_mic()
+        await self.start_listening()
+
+    def generate_response(self, prompt):
+        return self.gemini.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=self.persona + prompt + NOGO
+        ).text
+
+    def generate_audio(self, text):
+        self.dg_client.speak.v("2").save(
+            "response.wav",
+            {"text": text},
+            SpeakOptions(
+                model=self.voice,
+                encoding="linear16",
+                sample_rate=16000
+            )
         )
 
-        data = wf.readframes(1024)
-        while data:
-            stream.write(data)
-            data = wf.readframes(1024)
+    async def start_listening(self):
+        self.connection = self.dg_client.listen.asynclive.v("1")
+        self.mic = Microphone(self.connection.send)
 
-        stream.stop_stream()
-        stream.close()
-        pa.terminate()
-        wf.close()
-
-    except Exception as e:
-        print(f"Error playing file: {e}")
-        return None
-
-def delete_audio():
-    try:
-        audio = WAVE("response.wav")
-        length = audio.info.length
-        print(length)
-        os.remove("response.wav")
-        print(f"Deleted: response.wav")
-    except Exception as e:
-        print(f"Error deleting file: {e}")
-
-async def process_transcript(full_sentence, dg_connection):
-    global sleep
-    global persona
-    global dp_voice
-
-    if not full_sentence:
-        return
-
-    print(f"speaker: {full_sentence}")
-
-    if sleep:
-        if "hey" and "frigga" in full_sentence.lower():
-            print("Hello Detected!")
-            persona = FRIGGA
-            dp_voice = "aura-asteria-en"
-            sleep = False
-            transcript_collector.reset()
-            return  # Stop processing
-        elif "hey" and "crack" in full_sentence.lower():
-            print("Hello Detected!")
-            persona = CRACK
-            dp_voice = "aura-orion-en"
-            sleep = False
-            transcript_collector.reset()
-            return  # Stop processing
-        else:
-            transcript_collector.reset()
-            return  # Ignore all other speech while sleeping
-    else:
-        if "bye" in full_sentence.lower():
-            print("Goodbye!")
-            sleep = True
-            process_transcript()
-
-        asyncio.create_task(dg_connection.finish())  # ✅ Non-blocking stop
-
-        response_text = generate_message(full_sentence)
-        print(f"Gemini: {response_text}")
-        asyncio.sleep(1.5)
-        generate_audio(response_text)
-        play_audio()
-        delete_audio()
-        transcript_collector.reset()
-
-        # Restart in listening mode
-        asyncio.create_task(get_transcript())  # ✅ Properly restart transcript collection
-
-
-async def get_transcript():
-    try:
-        deepgram = DeepgramClient(DEEPGRAM_API_KEY)
-        dg_connection = deepgram.listen.asynclive.v("1")
-        microphone = Microphone(dg_connection.send)
-
-        async def on_message(self, result, **kwargs):
-            sentence = result.channel.alternatives[0].transcript
-            
-            # Ignore empty or very short utterances
-            if len(sentence.strip()) < 2:
+        async def on_message(_, result, **__):
+            text = result.channel.alternatives[0].transcript
+            if not text.strip():
                 return
-                
-            if not result.speech_final:
-                transcript_collector.add_part(sentence)
+
+            if result.speech_final:
+                self.transcript.append(text)
+                await self.process_command(' '.join(self.transcript))
+                self.transcript = []
             else:
-                transcript_collector.add_part(sentence)
-                full_sentence = transcript_collector.get_full_transcript()
-                await process_transcript(full_sentence, dg_connection)
+                self.transcript.append(text)
 
-        async def on_error(self, error, **kwargs):
-            print(f"\n\n{error}\n\n")
-
-        dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
-        dg_connection.on(LiveTranscriptionEvents.Error, on_error)
-
-        options = LiveOptions(
+        self.connection.on(LiveTranscriptionEvents.Transcript, on_message)
+        await self.connection.start(LiveOptions(
             model="nova-2",
             punctuate=True,
             language="en-US",
@@ -182,19 +153,24 @@ async def get_transcript():
             channels=1,
             sample_rate=16000,
             endpointing=True
-        )
+        ))
+        self.mic.start()
 
-        await dg_connection.start(options)
-        microphone.start()
-
-        while True:
-            await asyncio.sleep(1)
-
-    except Exception as e:
-        print(f"Could not open socket: {e}")
-        # Attempt to restart after error
-        await asyncio.sleep(5)
-        await get_transcript()
+    async def run(self):
+        try:
+            await self.start_listening()
+            while True:
+                await asyncio.sleep(1)
+        finally:
+            self.audio.cleanup()
+            if self.mic:
+                self.mic.finish()
+            if self.connection:
+                await self.connection.finish()
 
 if __name__ == "__main__":
-    asyncio.run(get_transcript())
+    assistant = LinuxAssistant()
+    try:
+        asyncio.run(assistant.run())
+    except KeyboardInterrupt:
+        print("\nExiting...")
