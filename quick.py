@@ -29,7 +29,6 @@ text = ""
 sleep = True
 persona = BDSM
 dp_voice = "aura-luna-en"
-microphone = None  # Global microphone reference
 
 class TranscriptCollector:
     def __init__(self):
@@ -65,7 +64,7 @@ def generate_audio(text):
     )
     response = deepgram.speak.v("2").save("response.wav", {"text": text}, options)
 
-async def play_audio():
+def play_audio():
     try:
         wf = wave.open("response.wav", "rb")
         pa = pyaudio.PyAudio()
@@ -86,8 +85,10 @@ async def play_audio():
         stream.close()
         pa.terminate()
         wf.close()
+
     except Exception as e:
         print(f"Error playing file: {e}")
+        return None
 
 def delete_audio():
     try:
@@ -103,7 +104,6 @@ async def process_transcript(full_sentence, dg_connection):
     global sleep
     global persona
     global dp_voice
-    global microphone
 
     if not full_sentence:
         return
@@ -117,43 +117,38 @@ async def process_transcript(full_sentence, dg_connection):
             dp_voice = "aura-asteria-en"
             sleep = False
             transcript_collector.reset()
-            return
+            return  # Stop processing
         elif "hey" and "crack" in full_sentence.lower():
             print("Hello Detected!")
             persona = CRACK
             dp_voice = "aura-orion-en"
             sleep = False
             transcript_collector.reset()
-            return
+            return  # Stop processing
         else:
             transcript_collector.reset()
-            return
+            return  # Ignore all other speech while sleeping
     else:
         if "bye" in full_sentence.lower():
             print("Goodbye!")
             sleep = True
-            transcript_collector.reset()
-            return
+            process_transcript()
 
-        # Stop listening before generating response
-        if microphone:
-            microphone.finish()
-        await dg_connection.finish()
+        asyncio.create_task(dg_connection.finish())  # ✅ Non-blocking stop
 
         response_text = generate_message(full_sentence)
         print(f"Gemini: {response_text}")
-        await asyncio.sleep(1.5)
+        asyncio.sleep(1.5)
         generate_audio(response_text)
-        await play_audio()
+        play_audio()
         delete_audio()
         transcript_collector.reset()
 
-        # Restart listening
-        await get_transcript()
+        # Restart in listening mode
+        asyncio.create_task(get_transcript())  # ✅ Properly restart transcript collection
+
 
 async def get_transcript():
-    global microphone
-    
     try:
         deepgram = DeepgramClient(DEEPGRAM_API_KEY)
         dg_connection = deepgram.listen.asynclive.v("1")
@@ -162,6 +157,7 @@ async def get_transcript():
         async def on_message(self, result, **kwargs):
             sentence = result.channel.alternatives[0].transcript
             
+            # Ignore empty or very short utterances
             if len(sentence.strip()) < 2:
                 return
                 
@@ -196,6 +192,7 @@ async def get_transcript():
 
     except Exception as e:
         print(f"Could not open socket: {e}")
+        # Attempt to restart after error
         await asyncio.sleep(5)
         await get_transcript()
 
