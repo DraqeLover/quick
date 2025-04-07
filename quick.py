@@ -9,7 +9,7 @@ from deepgram import (
     SpeakOptions,
 )
 from google import genai  
-from Characters import BDSM, WAR, CRACK, NOGO, FRIGGA
+from Characters import BDSM, WAR, CRACK, NOGO, FRIGGA, FRIDA
 import os
 import time
 import subprocess 
@@ -30,6 +30,7 @@ sleep = True
 persona = BDSM
 dp_voice = "aura-luna-en"
 microphone = None
+context = ""  # New variable to store conversation history
 
 class TranscriptCollector:
     def __init__(self):
@@ -50,10 +51,12 @@ transcript_collector = TranscriptCollector()
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 def generate_message(prompt):
+    global context
     response = gemini_client.models.generate_content(
         model="gemini-2.0-flash",
-        contents= persona + prompt + NOGO
+        contents= persona + prompt + NOGO + "this is the conversation so far: " + context
     )
+    context += f"User: {prompt}\nAI: {response.text}\n"
     return response.text
 
 def generate_audio(text):
@@ -106,6 +109,7 @@ async def process_transcript(full_sentence, dg_connection):
     global persona
     global dp_voice
     global microphone
+    global context
 
     if not full_sentence:
         return
@@ -114,16 +118,23 @@ async def process_transcript(full_sentence, dg_connection):
 
     if sleep:
         if "hey" and "frigga" in full_sentence.lower():
-            print("Hello Detected!")
+            print("Frigga Detected!")
             persona = FRIGGA
             dp_voice = "aura-asteria-en"
             sleep = False
             transcript_collector.reset()
             return  # Stop processing
         elif "hey" and "crack" in full_sentence.lower():
-            print("Hello Detected!")
+            print("Crack Detected!")
             persona = CRACK
             dp_voice = "aura-orion-en"
+            sleep = False
+            transcript_collector.reset()
+            return  # Stop processing
+        elif "hey" and "frida" in full_sentence.lower():
+            print("Frida Detected!")
+            persona = FRIDA
+            dp_voice = "aura-luna-en"
             sleep = False
             transcript_collector.reset()
             return  # Stop processing
@@ -135,9 +146,10 @@ async def process_transcript(full_sentence, dg_connection):
             print("Goodbye!")
             sleep = True
             process_transcript()
+            context = ""
 
         microphone.finish()
-        asyncio.create_task(dg_connection.finish())  # ✅ Non-blocking stop
+        asyncio.create_task(dg_connection.finish())  # Non-blocking stop
 
         response_text = generate_message(full_sentence)
         print(f"Gemini: {response_text}")
@@ -148,7 +160,7 @@ async def process_transcript(full_sentence, dg_connection):
         transcript_collector.reset()
 
         # Restart in listening mode
-        asyncio.create_task(get_transcript())  # ✅ Properly restart transcript collection
+        asyncio.create_task(get_transcript())  # Properly restart transcript collection
 
 
 async def get_transcript():
