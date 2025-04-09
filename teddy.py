@@ -30,22 +30,19 @@ sleep = True
 persona = BDSM
 dp_voice = "aura-luna-en"
 microphone = None
-context = ""  # New variable to store conversation history
+context = "" 
 
 commands = ""
 arduino = serial.Serial(port="COM5", baudrate=9600, timeout=1)
-time.sleep(2)  # Wait for connection to establish
+time.sleep(2)
 
 # PINDSVIND OUTGOING
 
 async def send_command():
     global commands
-    command_str = "".join(commands)  # Convert list to a space-separated string
-
     # Check if Arduino is connected
     if arduino.is_open:
-        arduino.write((command_str + "\n").encode())  # Send command string
-        await asyncio.sleep(1)  # Use await with asyncio.sleep()
+        arduino.write((commands + "\n").encode())  # Send command string
 
         response = arduino.readline().decode().strip()  # Read response
         print("Arduino:", response)
@@ -141,7 +138,7 @@ async def process_transcript(full_sentence, dg_connection):
     if sleep:
         if "hey" and "frigga" in full_sentence.lower():
             print("Frigga Detected!")
-            commands = "active"
+            commands = "hey"
             await send_command()
             persona = FRIGGA
             dp_voice = "aura-asteria-en"
@@ -150,6 +147,8 @@ async def process_transcript(full_sentence, dg_connection):
             return  # Stop processing
         elif "hey" and "crack" in full_sentence.lower():
             print("Crack Detected!")
+            commands = "hey"
+            await send_command()
             persona = CRACK
             dp_voice = "aura-orion-en"
             sleep = False
@@ -157,6 +156,8 @@ async def process_transcript(full_sentence, dg_connection):
             return  # Stop processing
         elif "hey" and "frida" in full_sentence.lower():
             print("Frida Detected!")
+            commands = "hey"
+            await send_command()
             persona = FRIDA
             dp_voice = "aura-luna-en"
             sleep = False
@@ -174,17 +175,24 @@ async def process_transcript(full_sentence, dg_connection):
             process_transcript()
             context = ""
         if "shakira" in full_sentence.lower():
+            microphone.finish()
+            asyncio.create_task(dg_connection.finish())  # Non-blocking stop
+            commands = "hey"
+            await send_command()
             print("shakira is going hard")
             play_audio_file("Shakira.wav")
-
+        
         microphone.finish()
         asyncio.create_task(dg_connection.finish())  # Non-blocking stop
 
         response_text = generate_message(full_sentence)
         print(f"Gemini: {response_text}")
-        asyncio.sleep(1.5)
+        commands = "active"
+        await send_command()
         generate_audio(response_text)
         play_audio()
+        commands = "none"
+        await send_command()
         delete_audio()
         transcript_collector.reset()
 
