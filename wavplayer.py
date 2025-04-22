@@ -1,5 +1,14 @@
 import wave
 import pyaudio
+import os
+
+MUSIC_FOLDER = "music"  # Replace with your folder name
+MUSIC = []
+
+for root, dirs, files in os.walk(MUSIC_FOLDER):
+    for file in files:
+        if file.endswith(".wav"):
+            MUSIC.append(os.path.join(root, file))
 
 def play_audio_file(filename):
     try:
